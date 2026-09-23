@@ -19,6 +19,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("init-db", help="create the SQLite schema and apply migrations")
     subparsers.add_parser("migration-status", help="show applied and pending migrations")
     subparsers.add_parser("check-db", help="run SQLite integrity and foreign-key checks")
+    subparsers.add_parser(
+        "expire-reservations", help="release stock held by expired activity reservations"
+    )
     reset = subparsers.add_parser("reset-db", help="delete and recreate the local SQLite database")
     reset.add_argument("--confirm", action="store_true", help="confirm destructive local reset")
     return parser
@@ -39,6 +42,13 @@ def main() -> int:
         result = assert_database_integrity(database)
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result["healthy"] else 1
+    if args.command == "expire-reservations":
+        from trailforge.services.reservations import ReservationService
+
+        with database.session() as session:
+            result = ReservationService(session).expire_due()
+        print(json.dumps(result.model_dump(), ensure_ascii=False))
+        return 0
     if args.command == "reset-db":
         if not args.confirm:
             parser = build_parser()

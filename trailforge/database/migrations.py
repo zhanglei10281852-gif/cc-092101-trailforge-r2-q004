@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 
 from trailforge.database.session import Database
 from trailforge.models.audit import SchemaMigration
@@ -12,10 +13,36 @@ from trailforge.models.audit import SchemaMigration
 class Migration:
     version: str
     description: str
+    upgrade: Callable[[Database], None] | None = None
+
+
+def _migration_0002(database: Database) -> None:
+    # create_all already creates brand-new tables; existing databases only need
+    # the reservation link column added to gear_loans.
+    with database.engine.begin() as connection:
+        columns = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(gear_loans)")}
+        if "reservation_item_id" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE gear_loans ADD COLUMN reservation_item_id INTEGER "
+                    "REFERENCES gear_reservation_items(id) ON DELETE SET NULL"
+                )
+            )
+            connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_gear_loans_reservation_item_id "
+                    "ON gear_loans (reservation_item_id)"
+                )
+            )
 
 
 MIGRATIONS = [
     Migration(version="0001", description="Initial TrailForge schema"),
+    Migration(
+        version="0002",
+        description="Activity-level gear reservations and loan linkage",
+        upgrade=_migration_0002,
+    ),
 ]
 
 
@@ -27,16 +54,18 @@ def initialize_database(database: Database) -> list[str]:
             row.version
             for row in session.query(SchemaMigration).order_by(SchemaMigration.version).all()
         }
-        for migration in MIGRATIONS:
-            if migration.version in known:
-                continue
+        pending = [migration for migration in MIGRATIONS if migration.version not in known]
+    for migration in pending:
+        if migration.upgrade is not None:
+            migration.upgrade(database)
+        with database.session() as session:
             session.add(
                 SchemaMigration(
                     version=migration.version,
                     description=migration.description,
                 )
             )
-            applied.append(migration.version)
+        applied.append(migration.version)
     return applied
 
 

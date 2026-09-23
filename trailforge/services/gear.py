@@ -39,7 +39,6 @@ from trailforge.schemas.gear import (
     GearRequirementCreate,
     GearRequirementResponse,
     InventoryAdjustment,
-    MissingGearItem,
     MissingGearReport,
 )
 from trailforge.services.base import ServiceBase
@@ -373,44 +372,11 @@ class GearService(ServiceBase):
         return GearCheckResponse.model_validate(check)
 
     def missing_report(self, expedition_id: int) -> MissingGearReport:
-        if self.expeditions.get(expedition_id) is None:
-            raise NotFoundError(f"Expedition {expedition_id} was not found")
-        participant_count = self.gear.participant_count(expedition_id)
-        checks = self.gear.gear_checks(expedition_id)
-        packed: dict[int, int] = {}
-        accepted = {ChecklistStatus.PACKED, ChecklistStatus.VERIFIED}
-        for check in checks:
-            if check.status in accepted:
-                packed[check.catalog_id] = packed.get(check.catalog_id, 0) + check.quantity
-        missing_items: list[MissingGearItem] = []
-        for requirement in self.gear.requirements(expedition_id):
-            required = (
-                requirement.quantity_for_group + requirement.quantity_per_person * participant_count
-            )
-            packed_quantity = packed.get(requirement.catalog_id, 0)
-            missing = max(required - packed_quantity, 0)
-            if missing > 0 and requirement.mandatory:
-                catalog = self.gear.get_catalog(requirement.catalog_id)
-                if catalog is None:
-                    continue
-                missing_items.append(
-                    MissingGearItem(
-                        catalog_id=catalog.id,
-                        sku=catalog.sku,
-                        name=catalog.name,
-                        mandatory=requirement.mandatory,
-                        required_quantity=required,
-                        packed_quantity=packed_quantity,
-                        missing_quantity=missing,
-                    )
-                )
-        return MissingGearReport(
-            expedition_id=expedition_id,
-            participant_count=participant_count,
-            checked_at=utc_now(),
-            is_ready=not missing_items,
-            missing_items=missing_items,
-        )
+        # Delegated so shared-club reservations and personal packing are scored
+        # against the same requirements and confirmed roster.
+        from trailforge.services.reservations import ReservationService
+
+        return ReservationService(self.session).missing_report(expedition_id)
 
     def mark_overdue_loans(self, now: datetime | None = None) -> int:
         current = now or utc_now()

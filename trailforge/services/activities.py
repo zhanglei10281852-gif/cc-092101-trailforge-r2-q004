@@ -154,6 +154,15 @@ class ExpeditionService(ServiceBase):
         expedition.status = target
         if target == ActivityStatus.CANCELLED:
             expedition.cancellation_reason = data.reason.strip()
+            from trailforge.services.reservations import ReservationService
+
+            released_reservations = ReservationService(self.session).cancel_open_for_expedition(
+                expedition.id,
+                reason=f"Expedition cancelled: {data.reason.strip()}",
+                actor_id=data.actor_id,
+            )
+        else:
+            released_reservations = 0
         self.session.flush()
         self.audit(
             actor_id=data.actor_id,
@@ -162,7 +171,10 @@ class ExpeditionService(ServiceBase):
             action=AuditAction.STATUS_CHANGED,
             before={"status": current.value},
             after={"status": target.value},
-            context={"reason": data.reason},
+            context={
+                "reason": data.reason,
+                "released_reservations": released_reservations,
+            },
         )
         return ExpeditionResponse.model_validate(expedition)
 

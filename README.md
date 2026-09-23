@@ -77,7 +77,7 @@ python -m compileall -q trailforge tests
 python tools/count_production_lines.py
 ```
 
-测试使用独立的临时 SQLite 文件，不读写默认开发数据库。覆盖正常流程、非法参数、外键与唯一约束、事务回滚、幂等、活动冲突与容量、装备库存、签到超时、重启恢复、并发写入、统计和 API 集成。
+测试使用独立的临时 SQLite 文件，不读写默认开发数据库。覆盖正常流程、非法参数、外键与唯一约束、事务回滚、幂等、活动冲突与容量、装备库存与活动级预留（部分领用、取消回滚、重复请求、并发争抢、重启与过期恢复）、签到超时、重启恢复、并发写入、统计和 API 集成。
 
 ## API 示例
 
@@ -108,6 +108,39 @@ curl -sS -X POST 'http://127.0.0.1:8000/api/v1/routes?actor_id=1' \
 ```
 
 列表接口都支持 `page`、`page_size`、`sort` 和 `direction`；各资源只接受文档中列出的排序字段，未知字段会返回明确的 422 业务错误。创建报名、打卡、紧急事件和库存变更时，正文包含 `idempotency_key`。同一作用域下用相同键和相同请求会返回原资源，用相同键发送不同请求会返回 409。
+
+### 活动级装备预留
+
+公共装备按活动预留，避免同一批库存被两个活动重复承诺。团体需求（`quantity_for_group`）只能从俱乐部公共库存预留；个人需求（`quantity_per_person`）归属成员自己的打包清单，由缺失报告跟踪。损坏或退役库存不能分配。
+
+```bash
+# 1) 根据活动装备需求生成预留草案（含可选库存批次和建议数量）
+curl -sS http://127.0.0.1:8000/api/v1/gear/expeditions/1/reservations/plan
+
+# 2) 一次操作中为多个库存批次分配数量（草案可反复覆盖）
+curl -sS -X PUT http://127.0.0.1:8000/api/v1/gear/expeditions/1/reservations/draft \
+  -H 'Content-Type: application/json' \
+  -d '{"actor_id":1,"idempotency_key":"draft-2026-001","draft_key":"main","expires_at":"2026-09-30T12:00:00Z","items":[{"inventory_id":3,"quantity":2},{"inventory_id":7,"quantity":1}]}'
+
+# 3) 批次确认：全部库存一起冻结，任一批次不足则整批失败
+curl -sS -X POST http://127.0.0.1:8000/api/v1/gear/reservations/1/confirm \
+  -H 'Content-Type: application/json' \
+  -d '{"actor_id":1,"idempotency_key":"confirm-2026-001","expected_version":1}'
+
+# 4) 部分或全部领用：冻结量同事务转为借出（先释放再借出，库存流水两步都记录）
+curl -sS -X POST http://127.0.0.1:8000/api/v1/gear/reservations/1/checkout \
+  -H 'Content-Type: application/json' \
+  -d '{"actor_id":1,"idempotency_key":"checkout-001","loans":[{"item_id":1,"borrower_id":2,"quantity":1,"loaned_at":"2026-09-25T08:00:00Z","due_at":"2026-09-27T20:00:00Z"}]}'
+
+# 5) 取消（未领用的冻结量回补）或由过期任务释放
+curl -sS -X POST http://127.0.0.1:8000/api/v1/gear/reservations/1/cancel \
+  -H 'Content-Type: application/json' \
+  -d '{"actor_id":1,"reason":"活动推迟","idempotency_key":"cancel-001"}'
+curl -sS -X POST http://127.0.0.1:8000/api/v1/gear/reservations/expire
+python -m trailforge.cli expire-reservations
+```
+
+预留状态机为 `draft → confirmed → partially_checked_out → checked_out`，取消或过期进入 `cancelled`/`expired`。确认、领用、取消都支持幂等键；并发确认同一批库存时条件更新保证只有一方成功，可用量永不为负。活动容量或需求变化后调用 `/reservations/delta` 只计算差额，不会静默改动已确认预留；活动取消时级联释放其开放预留。缺失报告现在分别列示团体预留缺口（`group_missing_quantity`）与个人打包缺口（`personal_missing_quantity`）。
 
 ## 目录
 

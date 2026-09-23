@@ -6,10 +6,12 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,6 +22,7 @@ from trailforge.domain.enums import (
     GearOwnership,
     InventoryMovementType,
     LoanStatus,
+    ReservationStatus,
 )
 from trailforge.models.mixins import IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin
 
@@ -103,6 +106,9 @@ class GearLoan(IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
     expedition_id: Mapped[int | None] = mapped_column(
         ForeignKey("expeditions.id", ondelete="SET NULL")
     )
+    reservation_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gear_reservation_items.id", ondelete="SET NULL"), index=True
+    )
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     returned_quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     loaned_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False)
@@ -153,3 +159,67 @@ class ActivityGearCheck(IntegerPrimaryKeyMixin, TimestampMixin, Base):
     verified_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+
+class GearReservation(IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
+    __tablename__ = "gear_reservations"
+    __table_args__ = (
+        Index(
+            "uq_reservation_expedition_draft",
+            "expedition_id",
+            "draft_key",
+            unique=True,
+            sqlite_where=text("status = 'draft'"),
+        ),
+        CheckConstraint(
+            "expires_at IS NULL OR expires_at > created_at", name="expiry_after_creation"
+        ),
+    )
+
+    expedition_id: Mapped[int] = mapped_column(
+        ForeignKey("expeditions.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[ReservationStatus] = mapped_column(
+        String(24), default=ReservationStatus.DRAFT, nullable=False, index=True
+    )
+    draft_key: Mapped[str] = mapped_column(String(80), default="default", nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    checked_out_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    expired_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    cancel_reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    items: Mapped[list[GearReservationItem]] = relationship(
+        back_populates="reservation",
+        cascade="all, delete-orphan",
+    )
+
+
+class GearReservationItem(IntegerPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "gear_reservation_items"
+    __table_args__ = (
+        UniqueConstraint("reservation_id", "inventory_id", name="uq_reservation_item_inventory"),
+        CheckConstraint("quantity > 0", name="reserved_quantity_positive"),
+        CheckConstraint("checked_out_quantity >= 0", name="checked_out_nonnegative"),
+        CheckConstraint("released_quantity >= 0", name="released_nonnegative"),
+        CheckConstraint(
+            "checked_out_quantity + released_quantity <= quantity",
+            name="reservation_item_within_quantity",
+        ),
+    )
+
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("gear_reservations.id", ondelete="CASCADE"), index=True
+    )
+    inventory_id: Mapped[int] = mapped_column(
+        ForeignKey("gear_inventory.id", ondelete="RESTRICT"), index=True
+    )
+    catalog_id: Mapped[int] = mapped_column(ForeignKey("gear_catalog.id", ondelete="RESTRICT"))
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    checked_out_quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    released_quantity: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+
+    reservation: Mapped[GearReservation] = relationship(back_populates="items")

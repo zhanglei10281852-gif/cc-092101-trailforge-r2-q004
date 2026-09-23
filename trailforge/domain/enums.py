@@ -106,6 +106,15 @@ class LoanStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ReservationStatus(StrEnum):
+    DRAFT = "draft"
+    CONFIRMED = "confirmed"
+    PARTIALLY_CHECKED_OUT = "partially_checked_out"
+    CHECKED_OUT = "checked_out"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
 class ChecklistStatus(StrEnum):
     REQUIRED = "required"
     PACKED = "packed"
@@ -146,6 +155,8 @@ class InventoryMovementType(StrEnum):
     RETURN_IN = "return_in"
     ADJUSTMENT = "adjustment"
     RETIRE = "retire"
+    RESERVED = "reserved"
+    RESERVATION_RELEASED = "reservation_released"
 
 
 class AuditAction(StrEnum):
@@ -160,6 +171,11 @@ class AuditAction(StrEnum):
     RETURNED = "returned"
     RISK_RECORDED = "risk_recorded"
     EMERGENCY_RECORDED = "emergency_recorded"
+    RESERVATION_DRAFTED = "reservation_drafted"
+    RESERVATION_CONFIRMED = "reservation_confirmed"
+    RESERVATION_CHECKED_OUT = "reservation_checked_out"
+    RESERVATION_CANCELLED = "reservation_cancelled"
+    RESERVATION_EXPIRED = "reservation_expired"
 
 
 PLAN_TRANSITIONS: dict[PlanStatus, set[PlanStatus]] = {
