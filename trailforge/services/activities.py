@@ -155,6 +155,16 @@ class ExpeditionService(ServiceBase):
         if target == ActivityStatus.CANCELLED:
             expedition.cancellation_reason = data.reason.strip()
         self.session.flush()
+        if target == ActivityStatus.CANCELLED:
+            # Freeze holds must be released back to the club pool when the
+            # activity is cancelled; fulfilled (loaned) gear is unaffected.
+            from trailforge.services.reservations import ReservationService
+
+            ReservationService(self.session).release_open_for_expedition(
+                expedition.id,
+                actor_id=data.actor_id,
+                reason=f"Expedition cancelled: {data.reason.strip()}",
+            )
         self.audit(
             actor_id=data.actor_id,
             entity_type="expedition",

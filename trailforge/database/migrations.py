@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
+from sqlalchemy.orm import Session
 
 from trailforge.database.session import Database
 from trailforge.models.audit import SchemaMigration
@@ -12,10 +14,42 @@ from trailforge.models.audit import SchemaMigration
 class Migration:
     version: str
     description: str
+    upgrade: Callable[[Session], None] | None = None
+
+
+def _upgrade_reservations(session: Session) -> None:
+    """Add reservation provenance to pre-existing gear_loans tables.
+
+    Fresh databases already receive every column from ``create_all``; this only
+    runs against a database created at 0001 and is therefore idempotent.
+    """
+    inspector = inspect(session.connection())
+    loan_columns = {column["name"] for column in inspector.get_columns("gear_loans")}
+    if "reservation_item_id" not in loan_columns:
+        session.execute(
+            text(
+                "ALTER TABLE gear_loans "
+                "ADD COLUMN reservation_item_id INTEGER "
+                "REFERENCES gear_reservation_items (id) ON DELETE SET NULL"
+            )
+        )
+    index_names = {index["name"] for index in inspector.get_indexes("gear_loans")}
+    if "ix_gear_loans_reservation_item_id" not in index_names:
+        session.execute(
+            text(
+                "CREATE INDEX ix_gear_loans_reservation_item_id "
+                "ON gear_loans (reservation_item_id)"
+            )
+        )
 
 
 MIGRATIONS = [
     Migration(version="0001", description="Initial TrailForge schema"),
+    Migration(
+        version="0002",
+        description="Activity-level gear reservations",
+        upgrade=_upgrade_reservations,
+    ),
 ]
 
 
@@ -30,6 +64,8 @@ def initialize_database(database: Database) -> list[str]:
         for migration in MIGRATIONS:
             if migration.version in known:
                 continue
+            if migration.upgrade is not None:
+                migration.upgrade(session)
             session.add(
                 SchemaMigration(
                     version=migration.version,

@@ -376,34 +376,61 @@ class GearService(ServiceBase):
         if self.expeditions.get(expedition_id) is None:
             raise NotFoundError(f"Expedition {expedition_id} was not found")
         participant_count = self.gear.participant_count(expedition_id)
-        checks = self.gear.gear_checks(expedition_id)
         packed: dict[int, int] = {}
         accepted = {ChecklistStatus.PACKED, ChecklistStatus.VERIFIED}
-        for check in checks:
+        for check in self.gear.gear_checks(expedition_id):
             if check.status in accepted:
                 packed[check.catalog_id] = packed.get(check.catalog_id, 0) + check.quantity
         missing_items: list[MissingGearItem] = []
         for requirement in self.gear.requirements(expedition_id):
-            required = (
-                requirement.quantity_for_group + requirement.quantity_per_person * participant_count
-            )
+            catalog = self.gear.get_catalog(requirement.catalog_id)
+            if catalog is None:
+                continue
             packed_quantity = packed.get(requirement.catalog_id, 0)
-            missing = max(required - packed_quantity, 0)
-            if missing > 0 and requirement.mandatory:
-                catalog = self.gear.get_catalog(requirement.catalog_id)
-                if catalog is None:
-                    continue
-                missing_items.append(
-                    MissingGearItem(
-                        catalog_id=catalog.id,
-                        sku=catalog.sku,
-                        name=catalog.name,
-                        mandatory=requirement.mandatory,
-                        required_quantity=required,
-                        packed_quantity=packed_quantity,
-                        missing_quantity=missing,
-                    )
+            personal_required = requirement.quantity_per_person * participant_count
+            # Packing checks are recorded per member; attribute them to personal
+            # requirements first, with any surplus covering shared group gear.
+            personal_packed = min(packed_quantity, personal_required)
+            surplus_packed = max(packed_quantity - personal_required, 0)
+            group_required = requirement.quantity_for_group
+            if group_required > 0:
+                # Club gear is covered by frozen reservations or surplus packs.
+                reserved = self.gear.reservation_covered_for_catalog(
+                    expedition_id, requirement.catalog_id
                 )
+                missing = max(group_required - surplus_packed - reserved, 0)
+                if missing > 0 and requirement.mandatory:
+                    missing_items.append(
+                        MissingGearItem(
+                            catalog_id=catalog.id,
+                            sku=catalog.sku,
+                            name=catalog.name,
+                            mandatory=requirement.mandatory,
+                            requirement_source="group",
+                            required_quantity=group_required,
+                            packed_quantity=surplus_packed,
+                            reserved_quantity=reserved,
+                            missing_quantity=missing,
+                        )
+                    )
+            if personal_required > 0:
+                # Personal gear follows owner-tied inventory; reservations
+                # never cover it, only member packing checks do.
+                missing = personal_required - personal_packed
+                if missing > 0 and requirement.mandatory:
+                    missing_items.append(
+                        MissingGearItem(
+                            catalog_id=catalog.id,
+                            sku=catalog.sku,
+                            name=catalog.name,
+                            mandatory=requirement.mandatory,
+                            requirement_source="personal",
+                            required_quantity=personal_required,
+                            packed_quantity=personal_packed,
+                            reserved_quantity=0,
+                            missing_quantity=missing,
+                        )
+                    )
         return MissingGearReport(
             expedition_id=expedition_id,
             participant_count=participant_count,

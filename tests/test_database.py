@@ -30,7 +30,7 @@ def test_database_enables_foreign_keys_and_wal(database: Database) -> None:
 def test_migration_initialization_is_idempotent(database: Database) -> None:
     assert initialize_database(database) == []
     status = migration_status(database)
-    assert status == {"initialized": True, "applied": ["0001"], "pending": []}
+    assert status == {"initialized": True, "applied": ["0001", "0002"], "pending": []}
 
 
 def test_integrity_check_reports_healthy_database(database: Database) -> None:
@@ -75,6 +75,63 @@ def test_file_database_survives_engine_restart(settings: Settings) -> None:
         restored = session.query(User).filter_by(email="persist@example.com").one()
         assert restored.display_name == "Persistent"
     second.engine.dispose()
+
+
+def test_0002_upgrade_adds_reservation_column_to_legacy_loans(settings: Settings) -> None:
+    from sqlalchemy import inspect as sa_inspect
+
+    legacy = Database(settings)
+    # Build a 0001-era database: create the full schema, then drop the new
+    # reservation tables/columns and stamp only the 0001 migration.
+    legacy.create_schema()
+    with legacy.session() as session:
+        session.execute(text("DROP TABLE IF EXISTS gear_reservation_items"))
+        session.execute(text("DROP TABLE IF EXISTS gear_reservations"))
+        session.execute(text("CREATE TABLE gear_loans_legacy_backup AS SELECT * FROM gear_loans"))
+    legacy.engine.dispose()
+
+    # Recreate gear_loans without the reservation column to mimic 0001.
+    legacy = Database(settings)
+    with legacy.session() as session:
+        session.execute(text("ALTER TABLE gear_loans RENAME TO gear_loans_v2"))
+        session.execute(
+            text(
+                "CREATE TABLE gear_loans ("
+                "id INTEGER PRIMARY KEY, created_at VARCHAR(32) NOT NULL, "
+                "updated_at VARCHAR(32) NOT NULL, version INTEGER NOT NULL, "
+                "inventory_id INTEGER NOT NULL, borrower_id INTEGER NOT NULL, "
+                "expedition_id INTEGER, quantity INTEGER NOT NULL, "
+                "returned_quantity INTEGER NOT NULL, loaned_at VARCHAR(32) NOT NULL, "
+                "due_at VARCHAR(32) NOT NULL, returned_at VARCHAR(32), "
+                "status VARCHAR(24) NOT NULL, condition_out VARCHAR(24) NOT NULL, "
+                "condition_in VARCHAR(24), notes TEXT NOT NULL)"
+            )
+        )
+        session.execute(text("DROP TABLE gear_loans_v2"))
+        session.execute(text("DROP TABLE gear_loans_legacy_backup"))
+        session.execute(text("DELETE FROM schema_migrations"))
+        session.execute(
+            text(
+                "INSERT INTO schema_migrations (version, description, applied_at) "
+                "VALUES ('0001', 'Initial TrailForge schema', '2026-01-01T00:00:00Z')"
+            )
+        )
+    legacy.engine.dispose()
+
+    upgraded = Database(settings)
+    applied = initialize_database(upgraded)
+    assert applied == ["0002"]
+    with upgraded.session() as session:
+        connection = session.connection()
+        columns = {col["name"] for col in sa_inspect(connection).get_columns("gear_loans")}
+        assert "reservation_item_id" in columns
+        indexes = {idx["name"] for idx in sa_inspect(connection).get_indexes("gear_loans")}
+        assert "ix_gear_loans_reservation_item_id" in indexes
+    # Upgrade is idempotent.
+    upgraded.engine.dispose()
+    again = Database(settings)
+    assert initialize_database(again) == []
+    again.engine.dispose()
 
 
 def test_concurrent_run_write_preserves_all_rows(database: Database) -> None:

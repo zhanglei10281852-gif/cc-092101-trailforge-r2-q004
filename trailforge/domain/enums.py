@@ -106,6 +106,37 @@ class LoanStatus(StrEnum):
     CANCELLED = "cancelled"
 
 
+class ReservationStatus(StrEnum):
+    DRAFT = "draft"
+    CONFIRMED = "confirmed"
+    PARTIALLY_FULFILLED = "partially_fulfilled"
+    FULFILLED = "fulfilled"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+RESERVATION_TRANSITIONS: dict[ReservationStatus, set[ReservationStatus]] = {
+    ReservationStatus.DRAFT: {
+        ReservationStatus.CONFIRMED,
+        ReservationStatus.CANCELLED,
+    },
+    ReservationStatus.CONFIRMED: {
+        ReservationStatus.PARTIALLY_FULFILLED,
+        ReservationStatus.FULFILLED,
+        ReservationStatus.CANCELLED,
+        ReservationStatus.EXPIRED,
+    },
+    ReservationStatus.PARTIALLY_FULFILLED: {
+        ReservationStatus.FULFILLED,
+        ReservationStatus.CANCELLED,
+        ReservationStatus.EXPIRED,
+    },
+    ReservationStatus.FULFILLED: set(),
+    ReservationStatus.CANCELLED: set(),
+    ReservationStatus.EXPIRED: set(),
+}
+
+
 class ChecklistStatus(StrEnum):
     REQUIRED = "required"
     PACKED = "packed"
@@ -146,6 +177,8 @@ class InventoryMovementType(StrEnum):
     RETURN_IN = "return_in"
     ADJUSTMENT = "adjustment"
     RETIRE = "retire"
+    RESERVATION_HOLD = "reservation_hold"
+    RESERVATION_RELEASE = "reservation_release"
 
 
 class AuditAction(StrEnum):
@@ -160,6 +193,11 @@ class AuditAction(StrEnum):
     RETURNED = "returned"
     RISK_RECORDED = "risk_recorded"
     EMERGENCY_RECORDED = "emergency_recorded"
+    RESERVATION_DRAFTED = "reservation_drafted"
+    RESERVATION_CONFIRMED = "reservation_confirmed"
+    RESERVATION_FULFILLED = "reservation_fulfilled"
+    RESERVATION_CANCELLED = "reservation_cancelled"
+    RESERVATION_EXPIRED = "reservation_expired"
 
 
 PLAN_TRANSITIONS: dict[PlanStatus, set[PlanStatus]] = {

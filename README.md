@@ -153,6 +153,19 @@ python -m trailforge.cli check-db
 
 ## 事务、并发与审计
 
-每个 HTTP 请求使用独立 SQLAlchemy Session，成功时统一提交，异常时统一回滚。外键约束在每条 SQLite 连接上开启；文件数据库使用 WAL 和 busy timeout。可重试的后台写操作可使用 `Database.run_write`，它只对 SQLite busy/locked 错误做有界指数退避，不会吞掉业务冲突。
+每个 HTTP 请求使用独立 SQLAlchemy Session，成功时统一提交，异常时统一回滚。外键约束在每条 SQLite 连接上开启；文件数据库使用 WAL 和 busy timeout。可重试的后台写操作可使用 `Database.run_write`，它只对 SQLite busy/locked 错误做有界指数退避，不会吞掉业务冲突。所有写事务以 `BEGIN IMMEDIATE` 开始，在任何读取之前排队获取写锁，配合 SQL 层的相对/条件 `UPDATE`（带 `RETURNING`）和 SAVEPOINT 批次，保证库存计数在并发下不会为负、批次要么全成要么全败。
 
 训练计划、训练记录、活动、报名、装备借还、风险和签到等关键变更都会写结构化审计日志。日志包含操作者、UTC 时间、对象、动作、前后状态和必要上下文；审计工具会过滤密码、令牌、密钥等敏感字段。
+
+## 活动级装备预留
+
+缺失清单只反映成员打包结果，无法阻止同一件公共装备被两支队伍重复承诺。预留功能把公共库存提升为活动级资源：
+
+1. `GET /api/v1/gear/expeditions/{id}/reservation-proposal` 根据活动需求（`quantity_for_group` 走俱乐部库存，`quantity_per_person` 走个人打包）生成预留草案，列出每个目录项可分配的具体库存行、可用量、不可分配原因（个人归属、损坏、退役）和建议预留数量。
+2. `POST /api/v1/gear/expeditions/{id}/reservations` 一次为多个目录项分配具体库存数量生成草案；草案不冻结库存。
+3. `POST /api/v1/gear/reservations/{id}/confirm` 原子冻结可用量，写 `reservation_hold` 流水；确认支持幂等键，失败整体回滚（SAVEPOINT），绝不部分冻结。
+4. `POST /api/v1/gear/reservations/{id}/fulfil` 领用预留：冻结量先 `reservation_release` 加回再 `loan_out` 借出（净变化为 0），生成关联预留明细的借出记录，支持部分领用；全部领完后状态转为 `fulfilled`。
+5. `POST /api/v1/gear/reservations/{id}/cancel` 取消，只释放尚未领用的冻结余量；`POST /api/v1/gear/reservations/expire-due` 批量过期释放；取消活动时自动级联释放其预留。
+6. `GET /api/v1/gear/expeditions/{id}/reservation-capacity-delta` 在人数/需求变化后计算差额，只对比创建时快照并给出新增缺口和可释放超量，绝不静默改动已确认预留。
+
+个人装备（`ownership=personal`）归属具体成员，不能进入公共预留池，只能由个人打包检查覆盖；损坏（`damaged`）和退役（`retired`）物品在草案、确认和领用各环节都被拒绝。预留、库存流水、缺失报告（`GET .../missing`，区分 `group`/`personal` 来源并计入已确认预留）和审计日志互相关联。查询接口包括 `GET /api/v1/gear/reservations`（可按活动和状态过滤）与 `GET /api/v1/gear/reservations/{id}`。

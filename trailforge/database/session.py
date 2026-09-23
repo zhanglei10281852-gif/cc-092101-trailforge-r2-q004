@@ -47,15 +47,26 @@ class Database:
         timeout_ms = int(self.settings.sqlite_timeout_seconds * 1000)
 
         @event.listens_for(engine, "connect")
-        def set_pragmas(connection: sqlite3.Connection, record: Any) -> None:
+        def set_pragmas(dbapi_connection: sqlite3.Connection, record: Any) -> None:
             del record
-            cursor = connection.cursor()
+            cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute(f"PRAGMA busy_timeout={timeout_ms}")
             if self.settings.database_url not in {"sqlite://", "sqlite:///:memory:"}:
                 cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.close()
+            # Let SQLAlchemy emit explicit BEGIN statements (see the "begin" listener).
+            dbapi_connection.isolation_level = None
+
+        @event.listens_for(engine, "begin")
+        def begin_immediate(connection: Any) -> None:
+            # Acquire the write lock before any read so concurrent write
+            # transactions serialize with fresh snapshots instead of failing
+            # with SQLITE_BUSY_SNAPSHOT mid-transaction. Relative/conditional
+            # UPDATE statements then guarantee counters (e.g. available stock)
+            # can never go negative under contention.
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
 
     def create_schema(self) -> None:
         from trailforge.models import load_all_models

@@ -20,6 +20,7 @@ from trailforge.domain.enums import (
     GearOwnership,
     InventoryMovementType,
     LoanStatus,
+    ReservationStatus,
 )
 from trailforge.models.mixins import IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin
 
@@ -114,6 +115,69 @@ class GearLoan(IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
     condition_out: Mapped[GearCondition] = mapped_column(String(24), nullable=False)
     condition_in: Mapped[GearCondition | None] = mapped_column(String(24))
     notes: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    reservation_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("gear_reservation_items.id", ondelete="SET NULL"), index=True
+    )
+
+
+class GearReservation(IntegerPrimaryKeyMixin, TimestampMixin, VersionMixin, Base):
+    __tablename__ = "gear_reservations"
+    __table_args__ = (
+        CheckConstraint("expires_at > created_at", name="expires_after_created"),
+    )
+
+    expedition_id: Mapped[int] = mapped_column(
+        ForeignKey("expeditions.id", ondelete="CASCADE"), index=True
+    )
+    status: Mapped[ReservationStatus] = mapped_column(
+        String(24), default=ReservationStatus.DRAFT, nullable=False, index=True
+    )
+    participant_snapshot: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), nullable=False, index=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    cancelled_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
+    cancel_reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="RESTRICT"))
+
+    items: Mapped[list[GearReservationItem]] = relationship(
+        back_populates="reservation",
+        cascade="all, delete-orphan",
+    )
+
+
+class GearReservationItem(IntegerPrimaryKeyMixin, TimestampMixin, Base):
+    __tablename__ = "gear_reservation_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "reservation_id",
+            "catalog_id",
+            "inventory_id",
+            name="uq_reservation_catalog_inventory",
+        ),
+        CheckConstraint("quantity_reserved > 0", name="reserved_positive"),
+        CheckConstraint("quantity_fulfilled >= 0", name="fulfilled_nonnegative"),
+        CheckConstraint(
+            "quantity_fulfilled <= quantity_reserved", name="fulfilled_within_reserved"
+        ),
+    )
+
+    reservation_id: Mapped[int] = mapped_column(
+        ForeignKey("gear_reservations.id", ondelete="CASCADE"), index=True
+    )
+    expedition_id: Mapped[int] = mapped_column(
+        ForeignKey("expeditions.id", ondelete="CASCADE"), index=True
+    )
+    catalog_id: Mapped[int] = mapped_column(ForeignKey("gear_catalog.id", ondelete="RESTRICT"))
+    inventory_id: Mapped[int] = mapped_column(
+        ForeignKey("gear_inventory.id", ondelete="RESTRICT")
+    )
+    ownership: Mapped[GearOwnership] = mapped_column(String(24), nullable=False)
+    quantity_required: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity_reserved: Mapped[int] = mapped_column(Integer, nullable=False)
+    quantity_fulfilled: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    requirement_source: Mapped[str] = mapped_column(String(24), default="group", nullable=False)
+
+    reservation: Mapped[GearReservation] = relationship(back_populates="items")
 
 
 class ActivityGearRequirement(IntegerPrimaryKeyMixin, TimestampMixin, Base):

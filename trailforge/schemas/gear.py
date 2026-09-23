@@ -4,7 +4,13 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from trailforge.domain.enums import ChecklistStatus, GearCondition, GearOwnership, LoanStatus
+from trailforge.domain.enums import (
+    ChecklistStatus,
+    GearCondition,
+    GearOwnership,
+    LoanStatus,
+    ReservationStatus,
+)
 from trailforge.schemas.common import (
     TimestampedResponse,
     VersionedResponse,
@@ -151,6 +157,7 @@ class GearLoanResponse(VersionedResponse):
     condition_out: GearCondition
     condition_in: GearCondition | None
     notes: str
+    reservation_item_id: int | None = None
 
 
 class GearRequirementCreate(BaseModel):
@@ -207,8 +214,10 @@ class MissingGearItem(BaseModel):
     sku: str
     name: str
     mandatory: bool
+    requirement_source: str
     required_quantity: int
     packed_quantity: int
+    reserved_quantity: int
     missing_quantity: int
 
 
@@ -230,3 +239,159 @@ class GearStatistics(BaseModel):
     utilization_rate: float
     items_by_condition: dict[str, int]
     loans_by_catalog: dict[str, int]
+
+
+# ---------------------------------------------------------------------------
+# Activity-level inventory reservations
+# ---------------------------------------------------------------------------
+
+
+class ReservationAllocationLine(BaseModel):
+    """Admin allocation of a concrete inventory row against a required catalog item."""
+
+    catalog_id: int = Field(gt=0)
+    inventory_id: int = Field(gt=0)
+    quantity_reserved: int = Field(gt=0, le=100000)
+
+
+class ReservationDraftCreate(BaseModel):
+    expires_at: datetime
+    items: list[ReservationAllocationLine] = Field(min_length=1)
+    actor_id: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=8, max_length=160)
+
+    @field_validator("expires_at")
+    @classmethod
+    def normalize_expiry(cls, value: datetime) -> datetime:
+        return require_aware(value)
+
+
+class ReservationConfirmRequest(BaseModel):
+    actor_id: int = Field(gt=0)
+    expected_version: int | None = Field(default=None, ge=1)
+    idempotency_key: str = Field(min_length=8, max_length=160)
+
+
+class ReservationFulfilmentLine(BaseModel):
+    reservation_item_id: int = Field(gt=0)
+    borrower_id: int = Field(gt=0)
+    quantity: int = Field(gt=0, le=100000)
+    loaned_at: datetime | None = None
+    due_at: datetime | None = None
+    notes: str = Field(default="", max_length=4000)
+
+    @field_validator("loaned_at", "due_at")
+    @classmethod
+    def normalize_time(cls, value: datetime | None) -> datetime | None:
+        return require_aware(value) if value is not None else None
+
+
+class ReservationFulfilRequest(BaseModel):
+    lines: list[ReservationFulfilmentLine] = Field(min_length=1)
+    actor_id: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=8, max_length=160)
+
+    @model_validator(mode="after")
+    def unique_lines(self) -> ReservationFulfilRequest:
+        ids = [line.reservation_item_id for line in self.lines]
+        if len(ids) != len(set(ids)):
+            raise ValueError("each reservation item can only be fulfilled once per request")
+        return self
+
+
+class ReservationCancelRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=2000)
+    actor_id: int = Field(gt=0)
+    idempotency_key: str = Field(min_length=8, max_length=160)
+
+
+class ReservationExpireRequest(BaseModel):
+    actor_id: int = Field(gt=0)
+    now: datetime | None = None
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=160)
+
+    @field_validator("now")
+    @classmethod
+    def normalize_now(cls, value: datetime | None) -> datetime | None:
+        return require_aware(value) if value is not None else None
+
+
+class ReservationItemResponse(TimestampedResponse):
+    reservation_id: int
+    expedition_id: int
+    catalog_id: int
+    inventory_id: int
+    ownership: GearOwnership
+    quantity_required: int
+    quantity_reserved: int
+    quantity_fulfilled: int
+    requirement_source: str
+
+
+class ReservationResponse(VersionedResponse):
+    expedition_id: int
+    status: ReservationStatus
+    participant_snapshot: int
+    expires_at: datetime
+    confirmed_at: datetime | None
+    cancelled_at: datetime | None
+    cancel_reason: str
+    created_by: int
+    items: list[ReservationItemResponse]
+
+
+class ReservationInventoryOption(BaseModel):
+    inventory_id: int
+    ownership: GearOwnership
+    owner_id: int | None
+    condition: GearCondition
+    quantity_total: int
+    quantity_available: int
+    allocatable: bool
+    blocked_reason: str | None = None
+
+
+class ReservationProposalLine(BaseModel):
+    catalog_id: int
+    sku: str
+    name: str
+    mandatory: bool
+    requirement_source: str
+    required_quantity: int
+    club_available_quantity: int
+    personal_covered_quantity: int
+    missing_quantity: int
+    options: list[ReservationInventoryOption]
+    suggested_reservation_quantity: int
+
+
+class ReservationProposal(BaseModel):
+    expedition_id: int
+    participant_count: int
+    generated_at: datetime
+    existing_open_reservation_id: int | None
+    lines: list[ReservationProposalLine]
+    fully_coverable: bool
+
+
+class ReservationCapacityDeltaLine(BaseModel):
+    catalog_id: int
+    sku: str
+    name: str
+    requirement_source: str
+    required_before: int
+    required_after: int
+    required_delta: int
+    reserved_quantity: int
+    newly_missing_quantity: int
+    releasable_over_reservation: int
+
+
+class ReservationCapacityDelta(BaseModel):
+    expedition_id: int
+    participant_count_before: int
+    participant_count_after: int
+    reservation_id: int
+    reservation_status: ReservationStatus
+    generated_at: datetime
+    lines: list[ReservationCapacityDeltaLine]
